@@ -1,46 +1,31 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
 
 const app = express();
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// تجاهل أخطاء SSL للاتصال بـ ANEM
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// ✅ إضافة مسار لـ favicon لتجنب خطأ 404
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end();
+});
 
-// ✅ الصفحة الرئيسية
 app.get('/', (req, res) => {
   res.json({ 
-    message: '🎉 ANEM Notifier API is Running!',
-    service: 'Algerian Unemployment Appointment Notifier',
+    message: '🎉 ANEM Notifier API is Live!',
     status: 'OK',
-    version: '1.0',
-    endpoints: {
-      health: '/health',
-      check: 'POST /api/check'
-    }
+    version: '1.2 - Error Fixed'
   });
 });
 
-// ✅ Health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK',
-    service: 'ANEM Notifier',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// ✅ التحقق من حالة ANEM
+// ✅ الإصدار النهائي مع معالجة الأخطاء
 app.post('/api/check', async (req, res) => {
+  console.log('📨 Received request:', JSON.stringify(req.body));
+  
   try {
     const { cardNumber, nationalId } = req.body;
 
-    // التحقق من البيانات
+    // التحقق من البيانات المدخلة
     if (!cardNumber || !nationalId) {
       return res.status(400).json({
         success: false,
@@ -48,57 +33,75 @@ app.post('/api/check', async (req, res) => {
       });
     }
 
-    console.log('🔍 Checking ANEM for:', cardNumber);
+    console.log('🔍 Checking ANEM for card:', cardNumber);
 
-    // الاتصال بـ ANEM API
-    const response = await fetch(
+    // استخدم axios بدلاً من fetch (أكثر استقراراً)
+    const axios = require('axios');
+    
+    // إعدادات SSL
+    const https = require('https');
+    const httpsAgent = new https.Agent({
+      rejectUnauthorized: false,
+      timeout: 45000
+    });
+
+    const response = await axios.get(
       `https://ac-controle.anem.dz/AllocationChomage/api/validateCandidate/query?wassitNumber=${cardNumber}&identityDocNumber=${nationalId}`,
       {
-        method: 'GET',
+        httpsAgent: httpsAgent,
+        timeout: 45000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'ar,en;q=0.9,fr;q=0.8'
-        },
-        timeout: 30000
+          'Accept': 'application/json'
+        }
       }
     );
 
-    if (!response.ok) {
-      throw new Error(`ANEM API returned status: ${response.status}`);
-    }
+    console.log('✅ ANEM API responded successfully');
+    const data = response.data;
 
-    const data = await response.json();
-    console.log('✅ ANEM API response received');
-
-    // إعداد الرد
+    // النتيجة النهائية
     const result = {
       success: true,
       hasAppointment: data.haveRendezVous,
       eligible: data.eligible,
       hasPreInscription: data.havePreInscription,
-      appointmentsAvailable: false, // سيتم تحديثه لاحقاً
-      userInfo: {
-        nom: data.nomDemandeurAr,
-        prenom: data.prenomDemandeurAr,
-        structure: data.structureAr
-      },
       message: data.haveRendezVous ? 
         '🎉 موعد متاح! سارع بالحجز!' : 
         '⏳ لا توجد مواعيد متاحة حالياً',
+      userInfo: {
+        name: data.nomDemandeurAr + ' ' + data.prenomDemandeurAr,
+        structure: data.structureAr
+      },
       timestamp: new Date().toISOString()
     };
 
+    console.log('📊 Result:', result.message);
     res.json(result);
 
   } catch (error) {
-    console.error('❌ ANEM API Error:', error.message);
-    
+    console.error('❌ Detailed Error:', {
+      message: error.message,
+      code: error.code,
+      response: error.response?.data
+    });
+
+    // ردود خطأ محددة
+    let errorMessage = 'فشل في الاتصال بخدمة ANEM';
+    let suggestion = 'يرجى المحاولة مرة أخرى لاحقاً';
+
+    if (error.code === 'ECONNABORTED') {
+      errorMessage = 'انتهت مدة الانتظار';
+      suggestion = 'ANEM يستغرق وقتاً طويلاً للرد';
+    } else if (error.response) {
+      errorMessage = `ANEM رد بالخطأ: ${error.response.status}`;
+    }
+
     res.status(500).json({
       success: false,
-      error: 'فشل في الاتصال بخدمة ANEM',
+      error: errorMessage,
       details: error.message,
-      suggestion: 'يرجى المحاولة مرة أخرى لاحقاً'
+      suggestion: suggestion
     });
   }
 });
@@ -107,8 +110,8 @@ app.post('/api/check', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(60));
-  console.log('🚀 ANEM Notifier deployed on Railway!');
-  console.log(`📍 Port: ${PORT}`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('🚀 ANEM Notifier - Error Fixed Version');
+  console.log(`📍 Running on port: ${PORT}`);
+  console.log('✅ Ready for testing!');
   console.log('='.repeat(60));
 });
