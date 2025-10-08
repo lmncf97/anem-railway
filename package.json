@@ -1,16 +1,14 @@
 {
-  "name": "anem-notifier",
+  "name": "anem-proxy",
   "version": "1.0.0",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "type": "module",
+  "main": "index.js",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "node-fetch": "^2.6.7"
+    "node-fetch": "^3.3.2",
+    "cors": "^2.8.5"
   },
-  "engines": {
-    "node": "18.x"
+  "scripts": {
+    "start": "node index.js"
   }
 }
