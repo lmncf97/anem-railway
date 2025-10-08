@@ -5,115 +5,105 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// تجاهل أخطاء SSL
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// ✅ صفحة الترحيب
 app.get('/', (req, res) => {
   res.json({ 
-    message: '🎉 ANEM Notifier API - Real Data Version',
-    status: 'OK', 
-    version: '4.0 - Real ANEM Integration'
-  });
-});
-
-// ✅ Health check
-app.get('/health', (req, res) => {
-  res.json({ 
+    message: '🎉 ANEM Notifier API - Complete System',
     status: 'OK',
-    service: 'ANEM Notifier API - Real Data',
-    timestamp: new Date().toISOString()
+    description: 'يستقبل رقم بطاقة العمل ورقم التعريف الوطني ليجلب البيانات من ANEM'
   });
 });
 
-// ✅ API حقيقي يتصل بـ ANEM
 app.post('/api/check', async (req, res) => {
-  console.log('📨 Request received:', req.body);
+  const { cardNumber, nationalId } = req.body;
   
+  console.log('🔐 Received credentials:', {
+    cardNumber: cardNumber,
+    nationalId: nationalId ? nationalId.substring(0, 6) + '...' : 'missing'
+  });
+
+  if (!cardNumber || !nationalId) {
+    return res.json({
+      success: false,
+      error: 'يرجى إدخال رقم بطاقة العمل ورقم التعريف الوطني'
+    });
+  }
+
   try {
-    const { cardNumber, nationalId } = req.body;
-
-    if (!cardNumber || !nationalId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card number and national ID are required'
-      });
-    }
-
-    console.log('🔍 Checking real ANEM for:', cardNumber);
-
-    // 1. التحقق من صحة البيانات والأهلية
-    const validationResponse = await fetch(
-      `https://ac-controle.anem.dz/AllocationChomage/api/validateCandidate/query?wassitNumber=${cardNumber}&identityDocNumber=${nationalId}`,
-      {
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Origin': 'https://minha.anem.dz',
-          'Referer': 'https://minha.anem.dz/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      }
-    );
+    // 1. التحقق من الهوية والأهلية
+    console.log('1️⃣ التحقق من الهوية...');
+    const validationUrl = `https://ac-controle.anem.dz/AllocationChomage/api/validateCandidate/query?wassitNumber=${cardNumber}&identityDocNumber=${nationalId}`;
+    
+    const validationResponse = await fetch(validationUrl, {
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://minha.anem.dz',
+        'Referer': 'https://minha.anem.dz/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 15000
+    });
 
     if (!validationResponse.ok) {
-      throw new Error(`Validation API failed: ${validationResponse.status}`);
+      throw new Error(`فشل في التحقق: ${validationResponse.status}`);
     }
 
     const validationData = await validationResponse.json();
-    console.log('✅ Validation data:', validationData);
+    console.log('✅ التحقق:', {
+      eligible: validationData.eligible,
+      hasPreInscription: validationData.havePreInscription,
+      hasAppointment: validationData.haveRendezVous
+    });
 
-    // 2. إذا كان مؤهلاً ومسجلاً مسبقاً، جلب البيانات الكاملة
+    // 2. إذا كان مسجلاً، جلب البيانات الكاملة
     let userData = {};
-    if (validationData.eligible && validationData.havePreInscription && validationData.preInscriptionId) {
-      try {
-        const userResponse = await fetch(
-          `https://ac-controle.anem.dz/AllocationChomage/api/PreInscription/GetPreInscription?Id=${validationData.preInscriptionId}`,
-          {
-            headers: {
-              'Accept': 'application/json, text/plain, */*',
-              'Origin': 'https://minha.anem.dz',
-              'Referer': 'https://minha.anem.dz/',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-          }
-        );
+    if (validationData.havePreInscription && validationData.preInscriptionId) {
+      console.log('2️⃣ جلب البيانات الشخصية...');
+      const userUrl = `https://ac-controle.anem.dz/AllocationChomage/api/PreInscription/GetPreInscription?Id=${validationData.preInscriptionId}`;
+      
+      const userResponse = await fetch(userUrl, {
+        headers: {
+          'Accept': 'application/json, text/plain, */*',
+          'Origin': 'https://minha.anem.dz',
+          'Referer': 'https://minha.anem.dz/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout: 15000
+      });
 
-        if (userResponse.ok) {
-          userData = await userResponse.json();
-          console.log('✅ User data retrieved:', userData);
-        }
-      } catch (userError) {
-        console.warn('⚠️ Could not fetch user details:', userError.message);
+      if (userResponse.ok) {
+        userData = await userResponse.json();
+        console.log('📋 البيانات الشخصية:', {
+          name: userData.prenomDemandeurAr + ' ' + userData.nomDemandeurAr,
+          birthDate: userData.dateNaissance,
+          agency: userData.structureAr
+        });
       }
     }
 
     // 3. التحقق من المواعيد المتاحة
     let availableDates = [];
     if (validationData.structureId && validationData.preInscriptionId) {
-      try {
-        const datesResponse = await fetch(
-          `https://gestrdv.anem.dz/AllocationChomage/api/RendezVous/GetAvailableDates?StructureId=${validationData.structureId}&PreInscriptionId=${validationData.preInscriptionId}`,
-          {
-            headers: {
-              'Accept': 'application/json, text/plain, */*',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-          }
-        );
+      console.log('3️⃣ التحقق من المواعيد...');
+      const datesUrl = `https://gestrdv.anem.dz/AllocationChomage/api/RendezVous/GetAvailableDates?StructureId=${validationData.structureId}&PreInscriptionId=${validationData.preInscriptionId}`;
+      
+      const datesResponse = await fetch(datesUrl, {
+        headers: {
+          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout: 15000
+      });
 
-        if (datesResponse.ok) {
-          const datesData = await datesResponse.json();
-          availableDates = datesData.dates || [];
-          console.log('✅ Available dates:', availableDates);
-        }
-      } catch (datesError) {
-        console.warn('⚠️ Could not fetch available dates:', datesError.message);
+      if (datesResponse.ok) {
+        const datesData = await datesResponse.json();
+        availableDates = datesData.dates || [];
+        console.log('📅 المواعيد المتاحة:', availableDates.length);
       }
     }
 
-    // 4. إعداد الاستجابة النهائية
+    // 4. إعداد الرد النهائي
     const response = {
       success: true,
       hasAppointment: validationData.haveRendezVous,
@@ -122,108 +112,63 @@ app.post('/api/check', async (req, res) => {
       eligible: validationData.eligible,
       hasPreInscription: validationData.havePreInscription,
       userInfo: {
-        // البيانات من API المستخدم
-        nomFr: userData.nomDemandeurFr,
-        prenomFr: userData.prenomDemandeurFr,
-        nomAr: userData.nomDemandeurAr,
-        prenomAr: userData.prenomDemandeurAr,
-        dateNaissance: userData.dateNaissance, // ✅ التاريخ الميلادي الحقيقي!
-        structureAr: userData.structureAr,
-        structureFr: userData.structureFr,
-        numeroDemandeur: userData.numeroDemandeur
+        nomAr: userData.nomDemandeurAr || '',
+        prenomAr: userData.prenomDemandeurAr || '',
+        dateNaissance: userData.dateNaissance ? this.formatDate(userData.dateNaissance) : 'غير محدد',
+        structureAr: userData.structureAr || '',
+        numeroDemandeur: userData.numeroDemandeur || cardNumber
       },
-      validationInfo: {
-        demandeurId: validationData.demandeurId,
-        structureId: validationData.structureId,
-        preInscriptionId: validationData.preInscriptionId
-      },
-      message: availableDates.length > 0 ? 
-        `🎉 ${availableDates.length} موعد متاح!` : 
-        validationData.haveRendezVous ? '📅 لديك موعد مسبق' : '⏳ لا توجد مواعيد متاحة حالياً',
+      message: this.generateStatusMessage(validationData.haveRendezVous, availableDates.length),
       isRealData: true,
       timestamp: new Date().toISOString()
     };
 
-    console.log('📤 Sending real data response');
+    console.log('🎯 الإرسال النهائي:', response.message);
     res.json(response);
 
   } catch (error) {
-    console.error('❌ API Error:', error.message);
-    
-    // استخدام بيانات تجريبية كنسخة احتياطية
-    const fallbackData = getFallbackData(cardNumber);
-    res.json(fallbackData);
+    console.error('❌ خطأ:', error.message);
+    res.json({
+      success: false,
+      error: 'فشل في الاتصال بخدمة ANEM: ' + error.message,
+      suggestion: 'يرجى المحاولة مرة أخرى لاحقاً'
+    });
   }
 });
 
-// ✅ بيانات احتياطية في حالة فشل الـ API
-function getFallbackData(cardNumber) {
-  const fallbackProfiles = {
-    "282706000480": {
-      success: true,
-      hasAppointment: false,
-      eligible: true,
-      hasPreInscription: true,
-      userInfo: {
-        nomAr: "رباحي",
-        prenomAr: "نوال", 
-        dateNaissance: "2006-07-25", // ✅ التاريخ الميلادي الحقيقي
-        structureAr: "الوكالة المحلية بوسعادة",
-        numeroDemandeur: "282706000480"
-      },
-      message: '⏳ لا توجد مواعيد متاحة حالياً',
-      isRealData: false,
-      isFallback: true
-    },
-    "282003014552": {
-      success: true,
-      hasAppointment: false,
-      eligible: true,
-      hasPreInscription: true,
-      userInfo: {
-        nomAr: "العلواني",
-        prenomAr: "محمد اكرم",
-        dateNaissance: "2003-05-14",
-        structureAr: "الوكالة المحلية بوسعادة", 
-        numeroDemandeur: "282003014552"
-      },
-      message: '⏳ لا توجد مواعيد متاحة حالياً',
-      isRealData: false,
-      isFallback: true
-    }
-  };
-
-  return fallbackProfiles[cardNumber] || {
-    success: true,
-    hasAppointment: false,
-    userInfo: {
-      nomAr: "مستخدم",
-      prenomAr: "تجريبي",
-      dateNaissance: "2000-01-01",
-      structureAr: "الوكالة المحلية",
-      numeroDemandeur: cardNumber
-    },
-    message: '⏳ لا توجد مواعيد متاحة حالياً',
-    isRealData: false,
-    isFallback: true
-  };
+// دالة مساعدة لتنسيق التاريخ
+function formatDate(dateString) {
+  if (!dateString) return '';
+  try {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('ar-SA', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  } catch (e) {
+    return dateString;
+  }
 }
 
-// ✅ معالجة المسارات غير المعروفة
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
-    availableEndpoints: ['GET /', 'GET /health', 'POST /api/check']
-  });
-});
+// دالة مساعدة لإنشاء رسالة الحالة
+function generateStatusMessage(hasAppointment, availableDatesCount) {
+  if (availableDatesCount > 0) {
+    return `🎉 ${availableDatesCount} موعد متاح! سارع بالحجز`;
+  } else if (hasAppointment) {
+    return '📅 لديك موعد مسبق';
+  } else {
+    return '⏳ لا توجد مواعيد متاحة حالياً';
+  }
+}
 
-// ✅ بدء الخادم
+// إرفاق الدوال المساعدة
+app.locals.formatDate = formatDate;
+app.locals.generateStatusMessage = generateStatusMessage;
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('='.repeat(60));
-  console.log('🚀 ANEM Notifier API - REAL DATA VERSION');
-  console.log(`📍 Port: ${PORT}`);
-  console.log('✅ Connected to real ANEM APIs');
-  console.log('='.repeat(60));
+  console.log('🚀 ANEM Notifier System Running on port', PORT);
+  console.log('📡 يستقبل: رقم بطاقة العمل + رقم التعريف الوطني');
+  console.log('📨 يرد بـ: الاسم، التاريخ، الوكالة، حالة الموعد');
 });
